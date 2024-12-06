@@ -1,10 +1,18 @@
 package misc
 
+import "core:fmt"
 import "core:math/bits"
+
+ROM_SIZE :: 0x4000
+ROM_START :: 0x4000
+BOOT_SIZE :: 0xFF
+BOOT_START :: 0xFF00
+DEFAULT_BOOT :: []u8{0x7C, 0x00, 0x40}
 
 Exception :: enum u8 {
     Nil,
     InvalidAddrMode,
+    InsufficientMemory,
 }
 
 Status :: bit_field u8 {
@@ -37,6 +45,8 @@ Instruction :: enum u8 {
     PSH, POP,
     TST, BIT,
     ASL, ASR,
+    DBG,
+    NIL,
     JMP,
     STR,
     INC, DEC,
@@ -65,6 +75,8 @@ Core :: struct {
 init :: proc() -> Core {
     core := Core{}
     core.mem = [65535]byte{0..<65535 = 0}
+    // default behavior, jump to start of ROM
+    load_bootrom(&core, DEFAULT_BOOT)
     return core
 }
 
@@ -74,6 +86,32 @@ reset :: proc(c: ^Core) {
     c.sp     = 0
     c.pc     = 0xFF00
     c.status = Status(0)
+}
+
+load_bootrom :: proc(c: ^Core, boot: []u8) {
+    if len(boot) > BOOT_SIZE {
+        raise(c, .InsufficientMemory)
+        return
+    }
+
+    addr := u16(BOOT_START)
+    for i in 0..<len(boot) {
+        mem_write(c, addr, boot[i])
+        addr += 1
+    }
+}
+
+load_prog :: proc(c: ^Core, prog: []u8) {
+    if len(prog) > ROM_SIZE {
+        raise(c, .InsufficientMemory)
+        return
+    }
+
+    addr := u16(ROM_START)
+    for i in 0..<len(prog) {
+        mem_write(c, addr, prog[i])
+        addr += 1
+    }
 }
 
 push_stack :: proc(c: ^Core, value: u8) {
@@ -88,7 +126,15 @@ pop_stack :: proc(c: ^Core) -> u8 {
 }
 
 fetch_byte :: proc(c: ^Core, mode: AddrMode = .Immediate) -> (data: u8) {
+    if c.pc >= 65535 {
+        c.halted = true
+        return
+    }
+
     #partial switch mode {
+    case .Implied:
+        data = c.acc
+
     case .Immediate:
         data = mem_read(c, c.pc)
         c.pc += 1
@@ -109,7 +155,7 @@ fetch_byte :: proc(c: ^Core, mode: AddrMode = .Immediate) -> (data: u8) {
     case .IndexedAbsolute:
         al := fetch_byte(c)
         ah := fetch_byte(c)
-        addr := u16(ah << 8) | u16(al)
+        addr := u16(ah) << 8 | u16(al)
         addr += u16(c.reg.x)
         data = mem_read(c, addr)
 
@@ -131,7 +177,7 @@ fetch_addr :: proc(c: ^Core, mode: AddrMode) -> (addr: u16) {
     case .Absolute:
         al := fetch_byte(c)
         ah := fetch_byte(c)
-        addr = u16(ah << 8) | u16(al)
+        addr = u16(ah) << 8 | u16(al)
 
     case .ZeroPage:
         al := fetch_byte(c)
@@ -140,7 +186,7 @@ fetch_addr :: proc(c: ^Core, mode: AddrMode) -> (addr: u16) {
     case .IndexedAbsolute:
         al := fetch_byte(c)
         ah := fetch_byte(c)
-        addr = u16(ah << 8) | u16(al)
+        addr = u16(ah) << 8 | u16(al)
         addr += u16(c.reg.x)
 
     case .IndexedZeroPage:
@@ -150,7 +196,7 @@ fetch_addr :: proc(c: ^Core, mode: AddrMode) -> (addr: u16) {
 
     case .Register:
         rb := RegisterByte(fetch_byte(c))
-        addr = u16(rb.extra << 8) | u16(rb.reg)
+        addr = u16(rb.extra) << 8 | u16(rb.reg)
     }
 
     return
@@ -166,7 +212,7 @@ mem_read_addr :: proc(c: ^Core, addr: u16) -> u8 {
 }
 
 mem_read_low_high :: proc(c: ^Core, al, ah: u8) -> u8 {
-    addr := u16(ah << 8) | u16(al)
+    addr := u16(ah) << 8 | u16(al)
     return mem_read(c, addr)
 }
 
@@ -180,7 +226,7 @@ mem_write_addr :: proc(c: ^Core, addr: u16, data: u8) {
 }
 
 mem_write_low_high :: proc(c: ^Core, al, ah: u8, data: u8) {
-    addr := u16(ah << 8) | u16(al)
+    addr := u16(ah) << 8 | u16(al)
     mem_write_addr(c, addr, data)
 }
 
@@ -190,7 +236,8 @@ raise :: proc(c: ^Core, e: Exception) {
 }
 
 tick :: proc(c: ^Core) {
-    op: Opcode = Opcode(fetch_byte(c))
+    b := fetch_byte(c)
+    op: Opcode = Opcode(b)
 
     switch op.inst {
     case .NOP: return
@@ -219,8 +266,8 @@ tick :: proc(c: ^Core) {
     case .BIT: bit(c, op.mode)
     case .ASL: asl(c)
     case .ASR: asr(c)
-    // $1A
-    // $1B
+    case .DBG: dbg(c)
+    case .NIL: // $1B
     case .JMP: jmp(c, op.mode)
     case .STR: str(c, op.mode)
     case .INC: inc(c, op.mode)
@@ -232,6 +279,13 @@ run :: proc(c: ^Core) {
     for !c.halted {
         tick(c)
     }
+}
+
+dbg :: proc(c: ^Core) {
+    fmt.printf("Processor Status:\n")
+    fmt.printf("    ACC: $%x    PC: $%x    SP: $%x    E: %t\n", c.acc, c.pc, c.sp, c.status.exception != .Nil)
+    fmt.printf("    X: $%x  Y: $%x\n", c.reg.x, c.reg.y)
+    fmt.printf("    Z: $%x  W: $%x\n", c.reg.z, c.reg.w)
 }
 
 lda :: proc(c: ^Core, mode: AddrMode) {
@@ -606,7 +660,6 @@ bit :: proc(c: ^Core, mode: AddrMode) {
     digit: u8
 
     #partial switch mode {
-    case .Implied: fallthrough
     case .Relative:
         raise(c, .InvalidAddrMode)
         return
@@ -617,7 +670,7 @@ bit :: proc(c: ^Core, mode: AddrMode) {
         digit = rb.extra & 0x07
 
     case:
-        operand = fetch_byte(c)
+        operand = fetch_byte(c, mode)
         digit = fetch_byte(c) & 0x07
     }
 
@@ -640,7 +693,8 @@ asr :: proc(c: ^Core) {
 jmp :: proc(c: ^Core, mode: AddrMode) {
     #partial switch mode {
     case .Absolute:
-        c.pc = fetch_addr(c, .Absolute)
+        target := fetch_addr(c, .Absolute)
+        c.pc = target
 
     case .Relative:
         offset := i8(fetch_byte(c))
