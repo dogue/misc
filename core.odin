@@ -27,15 +27,15 @@ AddrMode :: enum u8 {
 
 Instruction :: enum u8 {
     NOP,
-    LDA, LDX, LDY, LDZ, LDW,
+    LDA, LDR,
+    CLR, SWP, CMP,
     ADD, SUB, MUL, HLT,
-    AND, OR, XOR, NOT,
+    AND, OR, XOR, STA,
     JLT, JGT, JLE, JGE, JEQ, JNE,
     PSH, POP,
-    ROL, ROR,
     ASL, ASR,
-    CAL, RET, JMP,
-    STO,
+    JMP,
+    STR,
     INC, DEC,
 }
 
@@ -45,9 +45,8 @@ Opcode :: bit_field u8 {
 }
 
 RegisterByte :: bit_field u8 {
-    reg_low: u8      | 2,
-    reg_high: u8 | 2,
-    quick: u8     | 4,
+    reg: u8   | 2,
+    extra: u8 | 6,
 }
 
 Core :: struct {
@@ -85,40 +84,73 @@ pop_stack :: proc(c: ^Core) -> u8 {
     return value
 }
 
-fetch :: proc(c: ^Core) -> u8 {
-    b := c.mem[c.pc]
-    c.pc += 1
-    return b
+fetch_byte :: proc(c: ^Core, mode: AddrMode = .Immediate) -> (data: u8) {
+    #partial switch mode {
+    case .Immediate:
+        data = mem_read(c, c.pc)
+        c.pc += 1
+
+    case .Register:
+        rb := RegisterByte(fetch_byte(c))
+        data = c.reg[rb.reg]
+
+    case .Absolute:
+        al := fetch_byte(c)
+        ah := fetch_byte(c)
+        data = mem_read(c, al, ah)
+
+    case .ZeroPage:
+        al := fetch_byte(c)
+        data = mem_read(c, al, 0x00)
+
+    case .IndexedAbsolute:
+        al := fetch_byte(c)
+        ah := fetch_byte(c)
+        addr := u16(ah << 8) | u16(al)
+        addr += u16(c.reg.x)
+        data = mem_read(c, addr)
+
+    case .IndexedZeroPage:
+        al := fetch_byte(c)
+        al += c.reg.x
+        data = mem_read(c, al, 0x00)
+
+    // shouldn't happen? *shrug*
+    case:
+        data = 0
+    }
+
+    return
 }
 
-fetch_register :: proc(c: ^Core) -> u8 {
-    reg_byte := RegisterByte(fetch(c))
-    return c.reg[reg_byte.reg_low]
-}
+fetch_addr :: proc(c: ^Core, mode: AddrMode) -> (addr: u16) {
+    #partial switch mode {
+    case .Absolute:
+        al := fetch_byte(c)
+        ah := fetch_byte(c)
+        addr = u16(ah << 8) | u16(al)
 
-fetch_zeropage :: proc(c: ^Core) -> u8 {
-    al := fetch(c)
-    return mem_read(c, al, 0x00)
-}
+    case .ZeroPage:
+        al := fetch_byte(c)
+        addr = u16(al)
 
-fetch_absolute :: proc(c: ^Core) -> u8 {
-    al := fetch(c)
-    ah := fetch(c)
-    return mem_read(c, al, ah)
-}
+    case .IndexedAbsolute:
+        al := fetch_byte(c)
+        ah := fetch_byte(c)
+        addr = u16(ah << 8) | u16(al)
+        addr += u16(c.reg.x)
 
-fetch_indexed_zeropage :: proc(c: ^Core) -> u8 {
-    al := fetch(c)
-    al += c.reg.x
-    return mem_read(c, al, 0x00)
-}
+    case .IndexedZeroPage:
+        al := fetch_byte(c)
+        al += c.reg.x
+        addr = u16(al)
 
-fetch_indexed_absolute :: proc(c: ^Core) -> u8 {
-    al := fetch(c)
-    ah := fetch(c)
-    addr := u16(ah << 8) | u16(al)
-    addr += u16(c.reg.x)
-    return mem_read(c, addr)
+    case .Register:
+        rb := RegisterByte(fetch_byte(c))
+        addr = u16(rb.extra << 8) | u16(rb.reg)
+    }
+
+    return
 }
 
 mem_read :: proc {
@@ -155,164 +187,148 @@ raise :: proc(c: ^Core, e: Exception) {
 }
 
 tick :: proc(c: ^Core) {
-    op: Opcode = Opcode(fetch(c))
+    op: Opcode = Opcode(fetch_byte(c))
 
-    #partial switch op.inst {
+    switch op.inst {
     case .NOP: return
     case .LDA: lda(c, op.mode)
-    case .LDX: ldx(c, op.mode)
-    case .LDY: ldy(c, op.mode)
-    case .LDZ: ldz(c, op.mode)
-    case .LDW: ldw(c, op.mode)
-    case .ADD:
-    case .SUB:
-    case .MUL:
+    case .LDR: ldr(c, op.mode)
+    case .CLR:
+    case .SWP:
+    case .CMP:
+    case .ADD: add(c, op.mode)
+    case .SUB: sub(c, op.mode)
+    case .MUL: mul(c, op.mode)
     case .HLT: c.halted = true
-    case .AND:
-    case .OR:
-    case .XOR:
-    case .NOT:
-    case .JLT:
-    case .JGT:
-    case .JLE:
-    case .JGE:
-    case .JEQ:
-    case .JNE:
-    case .PSH:
-    case .POP:
-    case .ROL:
-    case .ROR:
-    case .ASL:
-    case .ASR:
-    case .CAL:
-    case .RET:
-    case .JMP:
-    case .STO:
-    case .INC:
-    case .DEC:
+    case .AND: and(c, op.mode)
+    case .OR:  or(c, op.mode)
+    case .XOR: xor(c, op.mode)
+    case .STA: sta(c, op.mode)
+    case .JLT: jlt(c, op.mode)
+    case .JGT: jgt(c, op.mode)
+    case .JLE: jle(c, op.mode)
+    case .JGE: jge(c, op.mode)
+    case .JEQ: jeq(c, op.mode)
+    case .JNE: jne(c, op.mode)
+    case .PSH: psh(c, op.mode)
+    case .POP: pop(c, op.mode)
+    // $16
+    // $17
+    case .ASL: asl(c, op.mode)
+    case .ASR: asr(c, op.mode)
+    // $1A
+    // $1B
+    case .JMP: jmp(c, op.mode)
+    case .STR: str(c, op.mode)
+    case .INC: inc(c, op.mode)
+    case .DEC: dec(c, op.mode)
     }
 }
 
 lda :: proc(c: ^Core, mode: AddrMode) {
+    #partial switch mode {
+    case .Implied: fallthrough
+    case .Relative:
+        raise(c, .InvalidAddrMode)
+
+    case:
+        c.acc = fetch_byte(c, mode)
+        c.status.zero = c.acc == 0
+    }
+}
+
+ldr :: proc(c: ^Core, mode: AddrMode) {
+    rb := RegisterByte(fetch_byte(c))
     operand: u8
 
-    switch mode {
-    case .Immediate:       operand = fetch(c)
-    case .Register:        operand = fetch_register(c)
-    case .Absolute:        operand = fetch_absolute(c)
-    case .ZeroPage:        operand = fetch_zeropage(c)
-    case .IndexedAbsolute: operand = fetch_indexed_absolute(c)
-    case .IndexedZeroPage: operand = fetch_indexed_zeropage(c)
+    #partial switch mode {
+    case .Relative:
+        raise(c, .InvalidAddrMode)
 
+    case .Implied:
+        operand = c.acc
+
+    // use extra data in the RegisterByte (small values $00-$3f)
+    // to avoid using an extra full byte for the instruction if possible
+    case .Immediate:
+        if rb.extra == 0 {
+            operand = fetch_byte(c)
+        } else {
+            operand = rb.extra
+        }
+
+    case:
+        operand = fetch_byte(c, mode)
+    }
+
+    c.reg[rb.reg] = operand
+    c.status.zero = operand == 0
+}
+
+clr :: proc(c: ^Core, mode: AddrMode) {
+    #partial switch mode {
+    case .Implied:
+        c.acc = 0
+
+    case .Register:
+        regs := fetch_byte(c)
+        if regs & 0x01 != 0 do c.reg.x = 0
+        if regs & 0x02 != 0 do c.reg.y = 0
+        if regs & 0x04 != 0 do c.reg.z = 0
+        if regs & 0x08 != 0 do c.reg.w = 0
+
+    case:
+        raise(c, .InvalidAddrMode)
+        return
+    }
+
+    c.status.zero = true
+}
+
+swp :: proc(c: ^Core, mode: AddrMode) {
+    rb := RegisterByte(fetch_byte(c))
+
+    #partial switch mode {
+    case .Implied:
+        c.acc, c.reg[rb.reg] = c.reg[rb.reg], c.acc
+
+    case .Register:
+        c.reg[rb.reg], c.reg[rb.extra] = c.reg[rb.extra], c.reg[rb.reg]
+
+    case:
+        raise(c, .InvalidAddrMode)
+    }
+}
+
+cmp :: proc(c: ^Core, mode: AddrMode) {
+    operand: u8
+
+    #partial switch mode {
     case .Implied: fallthrough
     case .Relative:
         raise(c, .InvalidAddrMode)
         return
+
+    case:
+        operand = fetch_byte(c, mode)
     }
 
-    c.acc = operand
-    c.status.zero = c.acc == 0
-}
-
-ldx :: proc(c: ^Core, mode: AddrMode) {
-    operand: u8
-
-    switch mode {
-    case .Implied:         operand = c.acc
-    case .Immediate:       operand = fetch(c)
-    case .Register:        operand = fetch_register(c)
-    case .Absolute:        operand = fetch_absolute(c)
-    case .ZeroPage:        operand = fetch_zeropage(c)
-    case .IndexedAbsolute: operand = fetch_indexed_absolute(c)
-    case .IndexedZeroPage: operand = fetch_indexed_zeropage(c)
-
-    case .Relative:
-        raise(c, .InvalidAddrMode)
-        return
-    }
-
-    c.reg.x = operand
-    c.status.zero = c.reg.x == 0
-}
-
-ldy :: proc(c: ^Core, mode: AddrMode) {
-    operand: u8
-
-    switch mode {
-    case .Implied:         operand = c.acc
-    case .Immediate:       operand = fetch(c)
-    case .Register:        operand = fetch_register(c)
-    case .Absolute:        operand = fetch_absolute(c)
-    case .ZeroPage:        operand = fetch_zeropage(c)
-    case .IndexedAbsolute: operand = fetch_indexed_absolute(c)
-    case .IndexedZeroPage: operand = fetch_indexed_zeropage(c)
-
-    case .Relative:
-        raise(c, .InvalidAddrMode)
-        return
-    }
-
-    c.reg.y = operand
-    c.status.zero = c.reg.y == 0
-}
-
-ldz :: proc(c: ^Core, mode: AddrMode) {
-    operand: u8
-
-    switch mode {
-    case .Implied:         operand = c.acc
-    case .Immediate:       operand = fetch(c)
-    case .Register:        operand = fetch_register(c)
-    case .Absolute:        operand = fetch_absolute(c)
-    case .ZeroPage:        operand = fetch_zeropage(c)
-    case .IndexedAbsolute: operand = fetch_indexed_absolute(c)
-    case .IndexedZeroPage: operand = fetch_indexed_zeropage(c)
-
-    case .Relative:
-        raise(c, .InvalidAddrMode)
-        return
-    }
-
-    c.reg.z = operand
-    c.status.zero = c.reg.z == 0
-}
-
-ldw :: proc(c: ^Core, mode: AddrMode) {
-    operand: u8
-
-    switch mode {
-    case .Implied:         operand = c.acc
-    case .Immediate:       operand = fetch(c)
-    case .Register:        operand = fetch_register(c)
-    case .Absolute:        operand = fetch_absolute(c)
-    case .ZeroPage:        operand = fetch_zeropage(c)
-    case .IndexedAbsolute: operand = fetch_indexed_absolute(c)
-    case .IndexedZeroPage: operand = fetch_indexed_zeropage(c)
-
-    case .Relative:
-        raise(c, .InvalidAddrMode)
-        return
-    }
-
-    c.reg.w = operand
-    c.status.zero = c.reg.w == 0
+    result, borrow := bits.overflowing_sub(c.acc, operand)
+    c.status.carry = !borrow
+    c.status.zero = result == 0
 }
 
 add :: proc(c: ^Core, mode: AddrMode) {
     operand: u8
 
-    switch mode {
-    case .Immediate:       operand = fetch(c)
-    case .Register:        operand = fetch_register(c)
-    case .Absolute:        operand = fetch_absolute(c)
-    case .ZeroPage:        operand = fetch_zeropage(c)
-    case .IndexedAbsolute: operand = fetch_indexed_absolute(c)
-    case .IndexedZeroPage: operand = fetch_indexed_zeropage(c)
-
+    #partial switch mode {
     case .Implied: fallthrough
     case .Relative:
         raise(c, .InvalidAddrMode)
         return
+
+    case:
+        operand = fetch_byte(c, mode)
     }
 
     result1, carry1 := bits.overflowing_add(c.acc, operand)
@@ -326,18 +342,14 @@ add :: proc(c: ^Core, mode: AddrMode) {
 sub :: proc(c: ^Core, mode: AddrMode) {
     operand: u8
 
-    switch mode {
-    case .Immediate:       operand = fetch(c)
-    case .Register:        operand = fetch_register(c)
-    case .Absolute:        operand = fetch_absolute(c)
-    case .ZeroPage:        operand = fetch_zeropage(c)
-    case .IndexedAbsolute: operand = fetch_indexed_absolute(c)
-    case .IndexedZeroPage: operand = fetch_indexed_zeropage(c)
-
+    #partial switch mode {
     case .Implied: fallthrough
     case .Relative:
         raise(c, .InvalidAddrMode)
         return
+
+    case:
+        operand = fetch_byte(c, mode)
     }
 
     result1, borrow1 := bits.overflowing_sub(c.acc, operand)
@@ -351,18 +363,14 @@ sub :: proc(c: ^Core, mode: AddrMode) {
 mul :: proc(c: ^Core, mode: AddrMode) {
     operand: u8
 
-    switch mode {
-    case .Immediate:       operand = fetch(c)
-    case .Register:        operand = fetch_register(c)
-    case .Absolute:        operand = fetch_absolute(c)
-    case .ZeroPage:        operand = fetch_zeropage(c)
-    case .IndexedAbsolute: operand = fetch_indexed_absolute(c)
-    case .IndexedZeroPage: operand = fetch_indexed_zeropage(c)
-
+    #partial switch mode {
     case .Implied: fallthrough
     case .Relative:
         raise(c, .InvalidAddrMode)
         return
+
+    case:
+        operand = fetch_byte(c, mode)
     }
 
     c.acc *= operand
@@ -372,18 +380,14 @@ mul :: proc(c: ^Core, mode: AddrMode) {
 and :: proc(c: ^Core, mode: AddrMode) {
     operand: u8
 
-    switch mode {
-    case .Immediate:       operand = fetch(c)
-    case .Register:        operand = fetch_register(c)
-    case .Absolute:        operand = fetch_absolute(c)
-    case .ZeroPage:        operand = fetch_zeropage(c)
-    case .IndexedAbsolute: operand = fetch_indexed_absolute(c)
-    case .IndexedZeroPage: operand = fetch_indexed_zeropage(c)
-
+    #partial switch mode {
     case .Implied: fallthrough
     case .Relative:
         raise(c, .InvalidAddrMode)
         return
+
+    case:
+        operand = fetch_byte(c, mode)
     }
 
     c.acc &= operand
@@ -393,18 +397,14 @@ and :: proc(c: ^Core, mode: AddrMode) {
 or :: proc(c: ^Core, mode: AddrMode) {
     operand: u8
 
-    switch mode {
-    case .Immediate:       operand = fetch(c)
-    case .Register:        operand = fetch_register(c)
-    case .Absolute:        operand = fetch_absolute(c)
-    case .ZeroPage:        operand = fetch_zeropage(c)
-    case .IndexedAbsolute: operand = fetch_indexed_absolute(c)
-    case .IndexedZeroPage: operand = fetch_indexed_zeropage(c)
-
+    #partial switch mode {
     case .Implied: fallthrough
     case .Relative:
         raise(c, .InvalidAddrMode)
         return
+
+    case:
+        operand = fetch_byte(c, mode)
     }
 
     c.acc |= operand
@@ -414,435 +414,287 @@ or :: proc(c: ^Core, mode: AddrMode) {
 xor :: proc(c: ^Core, mode: AddrMode) {
     operand: u8
 
-    switch mode {
-    case .Immediate:       operand = fetch(c)
-    case .Register:        operand = fetch_register(c)
-    case .Absolute:        operand = fetch_absolute(c)
-    case .ZeroPage:        operand = fetch_zeropage(c)
-    case .IndexedAbsolute: operand = fetch_indexed_absolute(c)
-    case .IndexedZeroPage: operand = fetch_indexed_zeropage(c)
-
+    #partial switch mode {
     case .Implied: fallthrough
     case .Relative:
         raise(c, .InvalidAddrMode)
         return
+
+    case:
+        operand = fetch_byte(c, mode)
     }
 
     c.acc ~= operand
     c.status.zero = c.acc == 0
 }
 
-// not - to be replaced
+sta :: proc(c: ^Core, mode: AddrMode) {
+    #partial switch mode {
+    case .Immediate: fallthrough
+    case .Implied: fallthrough
+    case .Relative:
+        raise(c, .InvalidAddrMode)
+
+    case:
+        addr := fetch_addr(c, mode)
+        mem_write(c, addr, c.acc)
+    }
+}
 
 jlt :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
+    #partial switch mode {
     case .Absolute:
-        al := fetch(c)
-        ah := fetch(c)
-        target := u16(ah << 8) | u16(al)
-
         if !c.status.carry {
-            c.pc = target
+            c.pc = fetch_addr(c, .Absolute)
         }
 
     case .Relative:
-        offset := i8(fetch(c))
+        offset := i8(fetch_byte(c))
         if !c.status.carry {
             c.pc = u16(i16(c.pc) + i16(offset))
         }
 
-    case .Immediate: fallthrough
-    case .Register: fallthrough
-    case .ZeroPage: fallthrough
-    case .IndexedAbsolute: fallthrough
-    case .IndexedZeroPage: fallthrough
-    case .Implied:
+    case:
         raise(c, .InvalidAddrMode)
     }
 }
 
 jgt :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
+    #partial switch mode {
     case .Absolute:
-        al := fetch(c)
-        ah := fetch(c)
-        target := u16(ah << 8) | u16(al)
-
         if c.status.carry && !c.status.zero {
-            c.pc = target
+            c.pc = fetch_addr(c, .Absolute)
         }
 
     case .Relative:
-        offset := i8(fetch(c))
+        offset := i8(fetch_byte(c))
         if c.status.carry && !c.status.zero {
             c.pc = u16(i16(c.pc) + i16(offset))
         }
 
-    case .Immediate: fallthrough
-    case .Register: fallthrough
-    case .ZeroPage: fallthrough
-    case .IndexedAbsolute: fallthrough
-    case .IndexedZeroPage: fallthrough
-    case .Implied:
+    case:
         raise(c, .InvalidAddrMode)
     }
 }
 
 jle :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
+    #partial switch mode {
     case .Absolute:
-        al := fetch(c)
-        ah := fetch(c)
-        target := u16(ah << 8) | u16(al)
-
         if !c.status.carry || c.status.zero {
-            c.pc = target
+            c.pc = fetch_addr(c, .Absolute)
         }
 
     case .Relative:
-        offset := i8(fetch(c))
+        offset := i8(fetch_byte(c))
         if !c.status.carry || c.status.zero {
             c.pc = u16(i16(c.pc) + i16(offset))
         }
 
-    case .Immediate: fallthrough
-    case .Register: fallthrough
-    case .ZeroPage: fallthrough
-    case .IndexedAbsolute: fallthrough
-    case .IndexedZeroPage: fallthrough
-    case .Implied:
+    case:
         raise(c, .InvalidAddrMode)
     }
 }
 
 jge :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
+    #partial switch mode {
     case .Absolute:
-        al := fetch(c)
-        ah := fetch(c)
-        target := u16(ah << 8) | u16(al)
-
         if c.status.carry {
-            c.pc = target
+            c.pc = fetch_addr(c, .Absolute)
         }
 
     case .Relative:
-        offset := i8(fetch(c))
+        offset := i8(fetch_byte(c))
         if c.status.carry {
             c.pc = u16(i16(c.pc) + i16(offset))
         }
 
-    case .Immediate: fallthrough
-    case .Register: fallthrough
-    case .ZeroPage: fallthrough
-    case .IndexedAbsolute: fallthrough
-    case .IndexedZeroPage: fallthrough
-    case .Implied:
+    case:
         raise(c, .InvalidAddrMode)
     }
 }
 
 jeq :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
+    #partial switch mode {
     case .Absolute:
-        al := fetch(c)
-        ah := fetch(c)
-        target := u16(ah << 8) | u16(al)
-
         if c.status.zero {
-            c.pc = target
+            c.pc = fetch_addr(c, .Absolute)
         }
 
     case .Relative:
-        offset := i8(fetch(c))
+        offset := i8(fetch_byte(c))
         if c.status.zero {
             c.pc = u16(i16(c.pc) + i16(offset))
         }
 
-    case .Immediate: fallthrough
-    case .Register: fallthrough
-    case .ZeroPage: fallthrough
-    case .IndexedAbsolute: fallthrough
-    case .IndexedZeroPage: fallthrough
-    case .Implied:
+    case:
         raise(c, .InvalidAddrMode)
     }
 }
 
 jne :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
+    #partial switch mode {
     case .Absolute:
-        al := fetch(c)
-        ah := fetch(c)
-        target := u16(ah << 8) | u16(al)
-
         if !c.status.zero {
-            c.pc = target
+            c.pc = fetch_addr(c, .Absolute)
         }
 
     case .Relative:
-        offset := i8(fetch(c))
+        offset := i8(fetch_byte(c))
         if !c.status.zero {
             c.pc = u16(i16(c.pc) + i16(offset))
         }
 
-    case .Immediate: fallthrough
-    case .Register: fallthrough
-    case .ZeroPage: fallthrough
-    case .IndexedAbsolute: fallthrough
-    case .IndexedZeroPage: fallthrough
-    case .Implied:
+    case:
         raise(c, .InvalidAddrMode)
     }
 }
 
 psh :: proc(c: ^Core, mode: AddrMode) {
-    operand: u8
+    #partial switch mode {
+    case .Implied:   push_stack(c, c.acc)
+    case .Immediate: push_stack(c, fetch_byte(c))
+    case .Register:  push_stack(c, fetch_byte(c, .Register))
 
-    switch mode {
-    case .Implied:   operand = c.acc
-    case .Immediate: operand = fetch(c)
-    case .Register:  operand = fetch_register(c)
-
-    case .Absolute: fallthrough
-    case .ZeroPage: fallthrough
-    case .IndexedAbsolute: fallthrough
-    case .IndexedZeroPage: fallthrough
-    case .Relative:
+    case:
         raise(c, .InvalidAddrMode)
-        return
     }
 
-    push_stack(c, operand)
 }
 
 pop :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
+    #partial switch mode {
     case .Implied:
         c.acc = pop_stack(c)
 
     case .Register:
-        reg_byte: RegisterByte = RegisterByte(fetch(c))
-        c.reg[reg_byte.reg_low] = pop_stack(c)
+        rb: RegisterByte = RegisterByte(fetch_byte(c))
+        c.reg[rb.reg] = pop_stack(c)
 
-    case .Immediate: fallthrough
-    case .Absolute: fallthrough
-    case .ZeroPage: fallthrough
-    case .IndexedAbsolute: fallthrough
-    case .IndexedZeroPage: fallthrough
-    case .Relative:
-        raise(c, .InvalidAddrMode)
-        return
-    }
-}
-
-asl :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
-    case .Implied:
-        c.status.carry = bool(c.acc & 0x80)
-        c.acc <<= 1
-        c.status.zero = c.acc == 0
-
-    case .Immediate: fallthrough
-    case .Register: fallthrough
-    case .Absolute: fallthrough
-    case .ZeroPage: fallthrough
-    case .IndexedAbsolute: fallthrough
-    case .IndexedZeroPage: fallthrough
-    case .Relative:
+    case:
         raise(c, .InvalidAddrMode)
     }
 }
 
-asr :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
-    case .Implied:
-        c.status.carry = bool(c.acc & 0x01)
-        c.acc >>= 1
-        c.status.zero = c.acc == 0
+asl :: proc(c: ^Core) {
+    c.status.carry = bool(c.acc & 0x80)
+    c.acc <<= 1
+    c.status.zero = c.acc == 0
+}
 
-    case .Immediate: fallthrough
-    case .Register: fallthrough
-    case .Absolute: fallthrough
-    case .ZeroPage: fallthrough
-    case .IndexedAbsolute: fallthrough
-    case .IndexedZeroPage: fallthrough
-    case .Relative:
-        raise(c, .InvalidAddrMode)
-    }
+asr :: proc(c: ^Core) {
+    c.status.carry = bool(c.acc & 0x01)
+    c.acc >>= 1
+    c.status.zero = c.acc == 0
 }
 
 jmp :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
+    #partial switch mode {
     case .Absolute:
-        al := fetch(c)
-        ah := fetch(c)
-        target := u16(ah << 8) | u16(al)
-        c.pc = target
+        c.pc = fetch_addr(c, .Absolute)
 
     case .Relative:
-        offset := i8(fetch(c))
+        offset := i8(fetch_byte(c))
         c.pc = u16(i16(c.pc) + i16(offset))
 
     case .Register:
-        reg_byte := RegisterByte(fetch(c))
-        al := reg_byte.reg_low
-        ah := reg_byte.reg_high
-        target := u16(ah << 8) | u16(al)
-        c.pc = target
+        c.pc = fetch_addr(c, .Register)
 
-    case .Immediate: fallthrough
-    case .ZeroPage: fallthrough
-    case .IndexedAbsolute: fallthrough
-    case .IndexedZeroPage: fallthrough
-    case .Implied:
+    case:
         raise(c, .InvalidAddrMode)
     }
 }
 
-sta :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
-    case .Absolute:
-        al := fetch(c)
-        ah := fetch(c)
-        mem_write(c, al, ah, c.acc)
-
-    case .ZeroPage:
-        al := fetch(c)
-        mem_write(c, al, 0x00, c.acc)
-
-    case .IndexedAbsolute:
-        al := fetch(c)
-        ah := fetch(c)
-        addr := u16(ah << 8) | u16(al)
-        addr += u16(c.reg.x)
-        mem_write(c, addr, c.acc)
-
-    case .IndexedZeroPage:
-        al := fetch(c)
-        al += c.reg.x
-        mem_write(c, al, 0x00, c.acc)
-
-    case .Register:
-        reg_byte := RegisterByte(fetch(c))
-        mem_write(c, reg_byte.reg_low, reg_byte.reg_high, c.acc)
-
-    case .Immediate: fallthrough
-    case .Implied: fallthrough
-    case .Relative:
-        raise(c, .InvalidAddrMode)
-    }
-}
 
 str :: proc(c: ^Core, mode: AddrMode) {
-    reg_byte := RegisterByte(fetch(c))
-    data := c.reg[reg_byte.reg_low]
+    rb := RegisterByte(fetch_byte(c))
+    data := c.reg[rb.reg]
 
-    switch mode {
+    #partial switch mode {
     case .Absolute:
-        al := fetch(c)
-        ah := fetch(c)
-        mem_write(c, al, ah, data)
+        addr := fetch_addr(c, .Absolute)
+        mem_write(c, addr, data)
 
     case .ZeroPage:
-        al := fetch(c)
-        mem_write(c, al, 0x00, data)
+        addr := fetch_addr(c, .ZeroPage)
+        mem_write(c, addr, data)
 
-    case .IndexedZeroPage: fallthrough
-    case .IndexedAbsolute: fallthrough
-    case .Register: fallthrough
-    case .Immediate: fallthrough
-    case .Implied: fallthrough
-    case .Relative:
+    case:
         raise(c, .InvalidAddrMode)
-
     }
 }
 
 inc :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
+    #partial switch mode {
     case .Implied:
         c.acc, c.status.carry = bits.overflowing_add(c.acc, 1)
         c.status.zero = c.acc == 0
 
     case .Register:
-        reg_byte := RegisterByte(fetch(c))
-        delta := reg_byte.quick
+        reg_byte := RegisterByte(fetch_byte(c))
+        delta := reg_byte.extra
         if delta == 0 { delta = 1 } // use quick const if present, else 1
-        c.reg[reg_byte.reg_low], c.status.carry = bits.overflowing_add(c.reg[reg_byte.reg_low], delta)
-        c.status.zero = c.reg[reg_byte.reg_low] == 0
+        c.reg[reg_byte.reg], c.status.carry = bits.overflowing_add(c.reg[reg_byte.reg], delta)
+        c.status.zero = c.reg[reg_byte.reg] == 0
 
     case .Absolute:
-        al := fetch(c)
-        ah := fetch(c)
-        val := mem_read(c, al, ah)
-        mem_write(c, al, ah, val + 1)
+        addr := fetch_addr(c, .Absolute)
+        val := mem_read(c, addr)
+        mem_write(c, addr, val + 1)
 
     case .ZeroPage:
-        al := fetch(c)
-        val := mem_read(c, al, 0x00)
-        mem_write(c, al, 0x00, val + 1)
+        addr := fetch_addr(c, .ZeroPage)
+        val := mem_read(c, addr)
+        mem_write(c, addr, val + 1)
 
     case .IndexedAbsolute:
-        al := fetch(c)
-        ah := fetch(c)
-        addr := u16(ah << 8) | u16(al)
-        addr += u16(c.reg.x)
+        addr := fetch_addr(c, .IndexedAbsolute)
         val := mem_read(c, addr)
         mem_write(c, addr, val + 1)
 
     case .IndexedZeroPage:
-        al := fetch(c)
-        al += c.reg.x
-        val := mem_read(c, al, 0x00)
-        mem_write(c, al, 0x00, val + 1)
+        addr := fetch_addr(c, .IndexedZeroPage)
+        val := mem_read(c, addr)
+        mem_write(c, addr, val + 1)
 
-    case .Immediate: fallthrough
-    case .Relative:
+    case:
         raise(c, .InvalidAddrMode)
     }
 }
 
 dec :: proc(c: ^Core, mode: AddrMode) {
-    switch mode {
+    #partial switch mode {
     case .Implied:
         c.acc, c.status.carry = bits.overflowing_sub(c.acc, 1)
         c.status.zero = c.acc == 0
 
     case .Register:
-        reg_byte := RegisterByte(fetch(c))
-        delta := reg_byte.quick
+        reg_byte := RegisterByte(fetch_byte(c))
+        delta := reg_byte.extra
         if delta == 0 { delta = 1 } // use quick const if present, else 1
-        c.reg[reg_byte.reg_low], c.status.carry = bits.overflowing_sub(c.reg[reg_byte.reg_low], delta)
-        c.status.zero = c.reg[reg_byte.reg_low] == 0
+        c.reg[reg_byte.reg], c.status.carry = bits.overflowing_sub(c.reg[reg_byte.reg], delta)
+        c.status.zero = c.reg[reg_byte.reg] == 0
 
     case .Absolute:
-        al := fetch(c)
-        ah := fetch(c)
-        val := mem_read(c, al, ah)
-        mem_write(c, al, ah, val - 1)
+        addr := fetch_addr(c, .Absolute)
+        val := mem_read(c, addr)
+        mem_write(c, addr, val - 1)
 
     case .ZeroPage:
-        al := fetch(c)
-        val := mem_read(c, al, 0x00)
-        mem_write(c, al, 0x00, val - 1)
+        addr := fetch_addr(c, .ZeroPage)
+        val := mem_read(c, addr)
+        mem_write(c, addr, val - 1)
 
     case .IndexedAbsolute:
-        al := fetch(c)
-        ah := fetch(c)
-        addr := u16(ah << 8) | u16(al)
-        addr += u16(c.reg.x)
+        addr := fetch_addr(c, .IndexedAbsolute)
         val := mem_read(c, addr)
         mem_write(c, addr, val - 1)
 
     case .IndexedZeroPage:
-        al := fetch(c)
-        al += c.reg.x
-        val := mem_read(c, al, 0x00)
-        mem_write(c, al, 0x00, val - 1)
+        addr := fetch_addr(c, .IndexedZeroPage)
+        val := mem_read(c, addr)
+        mem_write(c, addr, val - 1)
 
-    case .Immediate: fallthrough
-    case .Relative:
+    case:
         raise(c, .InvalidAddrMode)
     }
 }
