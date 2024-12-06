@@ -193,9 +193,9 @@ tick :: proc(c: ^Core) {
     case .NOP: return
     case .LDA: lda(c, op.mode)
     case .LDR: ldr(c, op.mode)
-    case .CLR:
-    case .SWP:
-    case .CMP:
+    case .CLR: clr(c, op.mode)
+    case .SWP: swp(c, op.mode)
+    case .CMP: cmp(c, op.mode)
     case .ADD: add(c, op.mode)
     case .SUB: sub(c, op.mode)
     case .MUL: mul(c, op.mode)
