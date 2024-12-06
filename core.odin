@@ -29,10 +29,13 @@ Instruction :: enum u8 {
     NOP,
     LDA, LDR,
     CLR, SWP, CMP,
-    ADD, SUB, MUL, HLT,
-    AND, OR, XOR, STA,
+    ADD, SUB, MUL,
+    HLT,
+    AND, OR, XOR,
+    STA,
     JLT, JGT, JLE, JGE, JEQ, JNE,
     PSH, POP,
+    TST, BIT,
     ASL, ASR,
     JMP,
     STR,
@@ -212,8 +215,8 @@ tick :: proc(c: ^Core) {
     case .JNE: jne(c, op.mode)
     case .PSH: psh(c, op.mode)
     case .POP: pop(c, op.mode)
-    // $16
-    // $17
+    case .TST: tst(c, op.mode)
+    case .BIT: bit(c, op.mode)
     case .ASL: asl(c)
     case .ASR: asr(c)
     // $1A
@@ -222,6 +225,12 @@ tick :: proc(c: ^Core) {
     case .STR: str(c, op.mode)
     case .INC: inc(c, op.mode)
     case .DEC: dec(c, op.mode)
+    }
+}
+
+run :: proc(c: ^Core) {
+    for !c.halted {
+        tick(c)
     }
 }
 
@@ -573,6 +582,47 @@ pop :: proc(c: ^Core, mode: AddrMode) {
     case:
         raise(c, .InvalidAddrMode)
     }
+}
+
+tst :: proc(c: ^Core, mode: AddrMode) {
+    operand: u8
+
+    #partial switch mode {
+    case .Implied: fallthrough
+    case .Relative:
+        raise(c, .InvalidAddrMode)
+        return
+
+    case:
+        operand = fetch_byte(c, mode)
+    }
+
+    result := c.acc & operand
+    c.status.zero = result == 0
+}
+
+bit :: proc(c: ^Core, mode: AddrMode) {
+    operand: u8
+    digit: u8
+
+    #partial switch mode {
+    case .Implied: fallthrough
+    case .Relative:
+        raise(c, .InvalidAddrMode)
+        return
+
+    case .Register:
+        rb := RegisterByte(fetch_byte(c))
+        operand = c.reg[rb.reg]
+        digit = rb.extra & 0x07
+
+    case:
+        operand = fetch_byte(c)
+        digit = fetch_byte(c) & 0x07
+    }
+
+    mask := u8(1 << digit)
+    c.status.zero = (operand & mask) == 0
 }
 
 asl :: proc(c: ^Core) {
