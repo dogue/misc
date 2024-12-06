@@ -214,8 +214,8 @@ tick :: proc(c: ^Core) {
     case .POP: pop(c, op.mode)
     // $16
     // $17
-    case .ASL: asl(c, op.mode)
-    case .ASR: asr(c, op.mode)
+    case .ASL: asl(c)
+    case .ASR: asr(c)
     // $1A
     // $1B
     case .JMP: jmp(c, op.mode)
